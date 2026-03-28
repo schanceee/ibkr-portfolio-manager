@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IBKR Portfolio Manager</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ── Reset & base ──────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --border:   #2a2d3e;
+  --text:     #e2e8f0;
+  --muted:    #8892a4;
+  --green:    #22c55e;
+  --yellow:   #eab308;
+  --red:      #ef4444;
+  --blue:     #3b82f6;
+  --paper:    #22c55e;
+  --live:     #ef4444;
+  --radius:   8px;
+}
+body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.5; }
+a { color: var(--blue); text-decoration: none; }
+button { cursor: pointer; border: none; border-radius: var(--radius); padding: 8px 16px; font-size: 13px; font-weight: 600; transition: opacity .15s; }
+button:hover { opacity: .85; }
+button:disabled { opacity: .35; cursor: not-allowed; }
+input[type="number"] { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; width: 72px; text-align: right; font-size: 13px; }
+input[type="number"]:focus { outline: 1px solid var(--blue); }
+
+/* ── Layout ────────────────────────────────────────────────────── */
+header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+header h1 { font-size: 16px; font-weight: 700; letter-spacing: -.3px; }
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; letter-spacing: .5px; }
+.badge-paper { background: rgba(34,197,94,.15); color: var(--paper); border: 1px solid rgba(34,197,94,.3); }
+.badge-live   { background: rgba(239,68,68,.15);  color: var(--live);  border: 1px solid rgba(239,68,68,.3); }
+.badge-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+
+#conn-banner { padding: 10px 24px; font-size: 13px; font-weight: 600; display: none; }
+#conn-banner.disconnected { background: rgba(239,68,68,.12); color: var(--red); border-bottom: 1px solid rgba(239,68,68,.2); display: flex; align-items: center; justify-content: space-between; }
+
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 24px; }
+.tab { padding: 12px 20px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s; }
+.tab.active { color: var(--text); border-bottom-color: var(--blue); }
+
+.page { padding: 24px; display: none; }
+.page.active { display: block; }
+
+/* ── Summary strip ──────────────────────────────────────────────── */
+.summary-strip { display: flex; gap: 24px; margin-bottom: 20px; flex-wrap: wrap; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 20px; flex: 1; min-width: 160px; }
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.stat-value { font-size: 22px; font-weight: 700; }
+.stat-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* ── Table ──────────────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
+.card-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.card-header h2 { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+table { width: 100%; border-collapse: collapse; }
+th { padding: 10px 16px; text-align: right; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--border); font-weight: 600; }
+th:first-child { text-align: left; }
+td { padding: 10px 16px; text-align: right; border-bottom: 1px solid rgba(255,255,255,.04); }
+td:first-child { text-align: left; font-weight: 600; }
+tr:last-child td { border-bottom: none; }
+tr.row-warning td { background: rgba(239,68,68,.05); }
+
+.ticker-cell { display: flex; align-items: center; gap: 8px; }
+.pnl-flag { font-size: 14px; cursor: default; }
+.pnl-flag[title] { position: relative; }
+
+/* delta colours */
+.delta-red    { color: var(--red); }
+.delta-yellow { color: var(--yellow); }
+.delta-green  { color: var(--green); }
+.delta-blue   { color: var(--blue); }
+.pnl-green    { color: var(--green); }
+.pnl-yellow   { color: var(--yellow); }
+.pnl-red      { color: var(--red); }
+
+/* editable target cell */
+.editable { position: relative; }
+.editable input { width: 64px; }
+
+/* weight sum row */
+#weight-sum-row td { font-size: 12px; padding: 8px 16px; }
+#weight-sum-ok  { color: var(--green); }
+#weight-sum-err { color: var(--red); }
+
+/* ── Chart ──────────────────────────────────────────────────────── */
+.chart-wrap { padding: 16px 20px; }
+
+/* ── Rebalancing page ───────────────────────────────────────────── */
+.controls-row { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.controls-row label { font-size: 13px; color: var(--muted); }
+.cash-row { display: flex; gap: 24px; margin-bottom: 16px; }
+.cash-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 18px; flex: 1; }
+.cash-box.shortfall { border-color: var(--red); background: rgba(239,68,68,.06); }
+.cash-box-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.cash-box-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+.cash-box.shortfall .cash-box-value { color: var(--red); }
+
+.btn-primary   { background: var(--blue);  color: #fff; }
+.btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.btn-danger    { background: var(--live);  color: #fff; }
+.btn-ghost     { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+
+.include-toggle { accent-color: var(--blue); width: 15px; height: 15px; cursor: pointer; }
+.row-excluded td { opacity: .4; }
+
+/* order results */
+.result-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.result-submitted { background: rgba(59,130,246,.2); color: var(--blue); }
+.result-filled    { background: rgba(34,197,94,.2);  color: var(--green); }
+.result-dry_run   { background: rgba(234,179,8,.2);  color: var(--yellow); }
+.result-error     { background: rgba(239,68,68,.2);  color: var(--red); }
+
+/* ── Modal ──────────────────────────────────────────────────────── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 200; display: none; }
+.modal-overlay.open { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: 480px; max-width: 95vw; padding: 28px; }
+.modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+.modal-mode { font-size: 24px; font-weight: 800; margin: 14px 0; text-align: center; padding: 10px; border-radius: 8px; }
+.modal-mode.paper { background: rgba(34,197,94,.15); color: var(--paper); }
+.modal-mode.live  { background: rgba(239,68,68,.15);  color: var(--live); }
+.modal-orders { margin: 16px 0; }
+.modal-order-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.modal-order-row:last-child { border-bottom: none; }
+.modal-total { margin-top: 12px; font-size: 13px; color: var(--muted); }
+.modal-footer { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+
+/* ── Spinner ─────────────────────────────────────────────────────── */
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Manage tab ─────────────────────────────────────────────────── */
+.manage-row td { padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.manage-row:last-child td { border-bottom: none; }
+.manage-ticker { font-weight: 700; font-size: 14px; }
+.btn-remove { background: transparent; color: var(--red); border: 1px solid rgba(239,68,68,.3); padding: 3px 10px; font-size: 12px; border-radius: 4px; }
+.btn-remove:hover { background: rgba(239,68,68,.1); opacity: 1; }
+.save-feedback { font-size: 13px; font-weight: 600; }
+
+/* ── Sortable headers ───────────────────────────────────────────── */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--text); }
+th.sortable::after { content: ' ↕'; opacity: .25; font-size: 10px; }
+th.sort-asc::after  { content: ' ↑'; color: var(--blue); opacity: 1; }
+th.sort-desc::after { content: ' ↓'; color: var(--blue); opacity: 1; }
+
+/* ── Misc ────────────────────────────────────────────────────────── */
+.muted { color: var(--muted); }
+.text-right { text-align: right; }
+.mt-12 { margin-top: 12px; }
+.empty-state { padding: 40px; text-align: center; color: var(--muted); }
+
+/* ── Disconnected overlay ────────────────────────────────────────── */
+#disconnected-screen { display: none; }
+#disconnected-screen.visible { display: block; }
+.disconnect-card { background: var(--surface); border: 1px solid rgba(239,68,68,.3); border-radius: var(--radius); padding: 32px; max-width: 540px; margin: 60px auto; text-align: center; }
+.disconnect-card h2 { color: var(--red); font-size: 20px; margin-bottom: 12px; }
+.disconnect-card p { color: var(--muted); line-height: 1.7; margin-bottom: 20px; }
+.retry-info { font-size: 12px; color: var(--muted); margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header>
+  <h1>IBKR Portfolio Manager</h1>
+  <div class="header-right">
+    <span id="conn-status" class="muted" style="font-size:12px">Connecting…</span>
+    <span id="mode-badge" class="badge badge-paper"><span class="badge-dot"></span> PAPER MODE</span>
+  </div>
+</header>
+
+<!-- ── Connection banner (disconnected state) ─────────────────────────── -->
+<div id="conn-banner">
+  <span>⚠ Cannot connect to Trader Workstation. Open TWS and make sure the API is enabled.</span>
+  <span id="retry-countdown" style="font-size:12px;opacity:.7"></span>
+</div>
+
+<!-- ── Tabs ───────────────────────────────────────────────────────────── -->
+<div class="tabs">
+  <div class="tab active" data-tab="dashboard">Portfolio</div>
+  <div class="tab" data-tab="rebalance">Rebalancing</div>
+  <div class="tab" data-tab="manage">Manage Portfolio</div>
+  <div class="tab" data-tab="history">Trade History</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     PAGE: Dashboard
+════════════════════════════════════════════════════════════════════════ -->
+<div id="page-dashboard" class="page active">
+
+  <!-- Summary strip -->
+  <div class="summary-strip">
+    <div class="stat">
+      <div class="stat-label">Total Portfolio</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub" id="stat-updated">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Cash (CHF)</div>
+      <div class="stat-value" id="stat-cash">—</div>
+      <div class="stat-sub" id="stat-cash-pct">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Invested</div>
+      <div class="stat-value" id="stat-invested">—</div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:8px;padding-bottom:4px;">
+      <button class="btn-secondary" onclick="loadPortfolio()">↺ Refresh</button>
+      <button class="btn-ghost" onclick="resetTargets()" style="font-size:12px">Reset targets</button>
+    </div>
+  </div>
+
+  <!-- Portfolio table -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Positions</h2>
+      <span class="muted" style="font-size:12px">Click any <em>Target %</em> cell to edit · Tab to move</span>
+    </div>
+    <table>
+      <thead>
+        <tr id="positions-thead">
+          <th class="sortable" data-sort="ticker">Ticker</th>
+          <th class="sortable" data-sort="name" style="text-align:left">Name</th>
+          <th class="sortable" data-sort="value">Value (CHF)</th>
+          <th class="sortable" data-sort="curPct">Current %</th>
+          <th class="sortable" data-sort="targetPct">Target %</th>
+          <th class="sortable" data-sort="delta">Delta (pp)</th>
+          <th class="sortable" data-sort="entry">Entry Price</th>
+          <th class="sortable" data-sort="pnl">P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody id="positions-tbody">
+        <tr><td colspan="8" class="empty-state"><span class="spinner"></span> Loading…</td></tr>
+      </tbody>
+      <tfoot>
+        <tr id="weight-sum-row" style="display:none">
+          <td colspan="4"></td>
+          <td colspan="4" id="weight-sum-cell"></td>
+        </tr>
+        <tr id="cash-row" style="display:none">
+          <td class="muted">Cash</td>
+          <td class="muted">—</td>
+          <td id="cash-value-cell" class="muted"></td>
+          <td id="cash-pct-cell" class="muted"></td>
+          <td colspan="4" class="muted">—</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <!-- Allocation chart -->
+  <div class="card">
+    <div class="card-header"><h2>Current vs. Target Allocation</h2></div>
+    <div class="chart-wrap" id="alloc-chart-wrap">
+      <canvas id="alloc-chart"></canvas>
+    </div>
+  </div>
+
+  <div style="text-align:right">
+    <button class="btn-primary" onclick="switchTab('rebalance')">Go to Rebalancing →</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     PAGE: Rebalancing
+════════════════════════════════════════════════════════════════════════ -->
+<div id="page-rebalance" class="page">
+
+  <div class="controls-row">
+    <label>Min. trade size: CHF
+      <input type="number" id="min-trade-input" value="500" min="0" step="100" onchange="computePlan()" style="margin-left:6px" />
+    </label>
+    <button class="btn-secondary" onclick="computePlan()">↺ Refresh Plan</button>
+  </div>
+
+  <div class="cash-row">
+    <div class="cash-box">
+      <div class="cash-box-label">Total to invest</div>
+      <div class="cash-box-value" id="reb-total-invest">—</div>
+    </div>
+    <div class="cash-box">
+      <div class="cash-box-label">Available cash</div>
+      <div class="cash-box-value" id="reb-cash">—</div>
+    </div>
+    <div class="cash-box" id="reb-shortfall-box" style="display:none">
+      <div class="cash-box-label">Shortfall</div>
+      <div class="cash-box-value" id="reb-shortfall">—</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h2>Suggested Buys</h2></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Include</th>
+          <th>Ticker</th>
+          <th>Gap (pp)</th>
+          <th>Suggested (CHF)</th>
+          <th>Est. Qty</th>
+          <th>Limit Price</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody id="plan-tbody">
+        <tr><td colspan="7" class="empty-state muted">Click "Refresh Plan" to compute</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Results panel (shown after dry-run or execute) -->
+  <div class="card" id="results-card" style="display:none">
+    <div class="card-header"><h2 id="results-title">Results</h2></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th><th>Qty</th><th>Limit</th><th>Est. CHF</th><th>Status</th><th>Order ID</th>
+        </tr>
+      </thead>
+      <tbody id="results-tbody"></tbody>
+    </table>
+  </div>
+
+  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+    <button class="btn-secondary" id="btn-dryrun" onclick="runDryRun()">Run Dry-Run</button>
+    <button class="btn-danger" id="btn-execute" onclick="openConfirmModal()">Execute Buys →</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     PAGE: Manage Portfolio
+════════════════════════════════════════════════════════════════════════ -->
+<div id="page-manage" class="page">
+
+  <div class="card">
+    <div class="card-header">
+      <h2>Target Positions &amp; Weights</h2>
+      <span class="muted" style="font-size:12px">Define which tickers you want to hold and at what percentage</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align:left">Ticker</th>
+          <th>Target Weight (%)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="manage-tbody"></tbody>
+    </table>
+    <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <input type="text" id="new-ticker-input" placeholder="Ticker (e.g. MSFT)"
+        style="background:var(--border);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;width:160px;text-transform:uppercase"
+        onkeydown="if(event.key==='Enter') addPosition()" />
+      <input type="number" id="new-weight-input" min="0" max="100" step="0.1" value="0"
+        style="width:80px" placeholder="%" />
+      <button class="btn-secondary" onclick="addPosition()">+ Add Position</button>
+    </div>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <div id="manage-sum-display" style="font-size:13px"></div>
+    <div style="display:flex;gap:10px">
+      <button class="btn-ghost" onclick="distributeEvenly()">Distribute evenly</button>
+      <button class="btn-ghost" onclick="loadManageDefaults()">Reset to defaults</button>
+      <button class="btn-primary" id="btn-save-manage" onclick="saveManage()">Save Changes</button>
+    </div>
+  </div>
+
+  <div class="card" style="padding:16px 20px">
+    <p style="font-size:12px;color:var(--muted);line-height:1.8">
+      <strong style="color:var(--text)">How this works:</strong><br>
+      Changes here update your target allocation used in the Portfolio and Rebalancing tabs.
+      Tickers you add don't need to be in your current IBKR account — they'll appear as 0% positions until you buy them.
+      Removing a ticker only removes it from your target; it won't affect your actual holdings.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     PAGE: Trade History
+════════════════════════════════════════════════════════════════════════ -->
+<div id="page-history" class="page">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <span class="muted" style="font-size:13px">All executed orders (non-dry-run) are saved here permanently.</span>
+    <button class="btn-secondary" onclick="loadHistory()">↺ Refresh</button>
+  </div>
+  <div class="card">
+    <div class="card-header"><h2>Order Log</h2></div>
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align:left">Date &amp; Time</th>
+          <th style="text-align:left">Mode</th>
+          <th style="text-align:left">Ticker</th>
+          <th>Qty</th>
+          <th>Limit Price</th>
+          <th>Est. CHF</th>
+          <th>Status</th>
+          <th>Order ID</th>
+        </tr>
+      </thead>
+      <tbody id="history-tbody">
+        <tr><td colspan="8" class="empty-state muted">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     Confirmation modal
+════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal">
+    <h2>Confirm Orders</h2>
+    <p class="muted" style="font-size:13px">Review carefully. This cannot be undone.</p>
+    <div class="modal-mode" id="modal-mode-badge">PAPER MODE</div>
+    <div class="modal-orders" id="modal-order-list"></div>
+    <div class="modal-total" id="modal-total-line"></div>
+    <p class="muted" style="font-size:12px;margin-top:8px">Orders are day-limit orders and expire at market close.</p>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeConfirmModal()">Cancel</button>
+      <button class="btn-danger" id="btn-confirm-execute" onclick="confirmAndExecute()">Confirm &amp; Execute</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     JS
+════════════════════════════════════════════════════════════════════════ -->
+<script>
+// ── Global state ─────────────────────────────────────────────────────────
+let appMode = 'paper';          // 'paper' | 'live'
+let isConnected = false;
+let portfolio = null;           // last /api/portfolio response
+let targets = {};               // { TICKER: weight }
+let pnlThreshold = -10;
+let currentPlan = [];           // last /api/plan response rows
+let retryCountdown = 10;
+let retryInterval = null;
+let sortCol = null;             // active sort column key
+let sortDir = 1;                // 1 = ascending, -1 = descending
+
+// ── Formatting helpers ────────────────────────────────────────────────────
+const fmt = (n, dec=0) => n == null ? '—' : n.toLocaleString('de-CH', {minimumFractionDigits: dec, maximumFractionDigits: dec});
+const fmtPct = n => n == null ? '—' : n.toFixed(1) + '%';
+const fmtChf = n => n == null ? '—' : 'CHF ' + fmt(n, 0);
+
+// ── Tab switching ─────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
+  if (name === 'rebalance' && portfolio) computePlan();
+  if (name === 'history') loadHistory();
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+// ── Positions table sorting ───────────────────────────────────────────────
+document.getElementById('positions-thead').addEventListener('click', e => {
+  const th = e.target.closest('th[data-sort]');
+  if (!th) return;
+  const col = th.dataset.sort;
+  if (sortCol === col) {
+    sortDir *= -1;
+  } else {
+    sortCol = col;
+    sortDir = 1;
+  }
+  // Update header classes
+  document.querySelectorAll('#positions-thead th').forEach(h => {
+    h.classList.remove('sort-asc', 'sort-desc');
+    if (h.dataset.sort === sortCol) h.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+  });
+  if (portfolio) renderDashboard();
+});
+
+// ── Connection status polling ─────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    isConnected = d.connected;
+    appMode = d.mode;
+    updateConnectionUI();
+  } catch (e) {
+    isConnected = false;
+    updateConnectionUI();
+  }
+}
+
+function updateConnectionUI() {
+  const banner = document.getElementById('conn-banner');
+  const connStatus = document.getElementById('conn-status');
+  const modeBadge = document.getElementById('mode-badge');
+  const modalBadge = document.getElementById('modal-mode-badge');
+
+  if (isConnected) {
+    banner.className = '';
+    banner.style.display = 'none';
+    connStatus.textContent = 'TWS Connected ✓';
+    connStatus.style.color = 'var(--green)';
+    clearInterval(retryInterval);
+    retryInterval = null;
+  } else {
+    banner.className = 'disconnected';
+    if (!retryInterval) {
+      retryCountdown = 10;
+      retryInterval = setInterval(() => {
+        retryCountdown--;
+        document.getElementById('retry-countdown').textContent = `Retrying in ${retryCountdown}s…`;
+        if (retryCountdown <= 0) retryCountdown = 10;
+      }, 1000);
+    }
+    connStatus.textContent = 'TWS Disconnected';
+    connStatus.style.color = 'var(--red)';
+  }
+
+  const isLive = appMode === 'live';
+  modeBadge.className = 'badge ' + (isLive ? 'badge-live' : 'badge-paper');
+  modeBadge.innerHTML = `<span class="badge-dot"></span> ${isLive ? 'LIVE' : 'PAPER'} MODE`;
+
+  if (modalBadge) {
+    modalBadge.className = 'modal-mode ' + appMode;
+    modalBadge.textContent = isLive ? '⚠ LIVE TRADING — REAL MONEY ⚠' : 'PAPER MODE (simulated)';
+  }
+}
+
+// ── Load targets ──────────────────────────────────────────────────────────
+async function loadTargets() {
+  const r = await fetch('/api/targets');
+  const d = await r.json();
+  targets = d.targets;
+  pnlThreshold = d.pnl_alert_threshold;
+  document.getElementById('min-trade-input').value = d.min_trade;
+  return d;
+}
+
+// ── Save targets ──────────────────────────────────────────────────────────
+async function saveTargets() {
+  const resp = await fetch('/api/targets', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      targets,
+      pnl_alert_threshold: pnlThreshold,
+      min_trade: parseFloat(document.getElementById('min-trade-input').value) || 500,
+    })
+  });
+  const cell = document.getElementById('weight-sum-cell');
+  if (resp.ok) {
+    // Flash a brief "Saved" indicator inside the weight-sum cell
+    const prev = cell.innerHTML;
+    cell.innerHTML = prev + '&nbsp;&nbsp;<span style="color:var(--green);font-size:11px">Saved ✓</span>';
+    setTimeout(() => { if (cell.innerHTML.includes('Saved')) cell.innerHTML = prev; }, 2000);
+  } else {
+    const e = await resp.json();
+    const prev = cell.innerHTML;
+    cell.innerHTML = prev + `&nbsp;&nbsp;<span style="color:var(--red);font-size:11px">⚠ ${e.detail}</span>`;
+    setTimeout(() => { if (cell.innerHTML.includes('⚠')) cell.innerHTML = prev; }, 4000);
+  }
+}
+
+async function resetTargets() {
+  if (!confirm('Reset all target weights to defaults from config.py?')) return;
+  const r = await fetch('/api/targets/reset', {method: 'POST'});
+  const d = await r.json();
+  targets = d.targets;
+  if (portfolio) renderDashboard();
+}
+
+// ── Load & render portfolio ───────────────────────────────────────────────
+async function loadPortfolio() {
+  if (!isConnected) return;
+  const tbody = document.getElementById('positions-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><span class="spinner"></span> Fetching from TWS…</td></tr>';
+  try {
+    const r = await fetch('/api/portfolio');
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="8" class="empty-state" style="color:var(--red)">Error fetching portfolio. Is TWS running?</td></tr>'; return; }
+    portfolio = await r.json();
+    renderDashboard();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state" style="color:var(--red)">Network error</td></tr>';
+  }
+}
+
+function renderDashboard() {
+  if (!portfolio) return;
+
+  // Summary strip
+  document.getElementById('stat-total').textContent = fmtChf(portfolio.total_value_chf);
+  document.getElementById('stat-cash').textContent = fmtChf(portfolio.cash_chf);
+  document.getElementById('stat-invested').textContent = fmtChf(portfolio.total_invested);
+  const cashPct = portfolio.total_value_chf > 0 ? (portfolio.cash_chf / portfolio.total_value_chf * 100) : 0;
+  document.getElementById('stat-cash-pct').textContent = fmtPct(cashPct) + ' of portfolio';
+  const ts = new Date(portfolio.last_updated);
+  document.getElementById('stat-updated').textContent = 'Updated ' + ts.toLocaleTimeString('en-CH', {hour:'2-digit', minute:'2-digit'});
+
+  // Build symbol→position map
+  const posMap = {};
+  for (const p of portfolio.positions) posMap[p.ticker] = p;
+
+  const total = portfolio.total_value_chf;
+  const tbody = document.getElementById('positions-tbody');
+  tbody.innerHTML = '';
+
+  // Helper: build P&L cell content (flag, class, tooltip, display string)
+  function buildPnl(pnlPct, entryPrice, qty, unrealizedPnl, currency) {
+    if (pnlPct === null) return { flag: '', cls: '', tooltip: '', str: '—', rowCls: '' };
+    const sign = pnlPct >= 0 ? '+' : '';
+    const costBasis = (entryPrice != null && qty != null) ? entryPrice * qty : null;
+    const pnlAmtStr = unrealizedPnl != null
+      ? `${unrealizedPnl >= 0 ? '+' : ''}${fmt(unrealizedPnl, 0)} ${currency}`
+      : '';
+    // Tooltip: "Paid: 914 USD (4 × 228.43) → P&L: +75 USD (+8.3%)"
+    const costStr = costBasis != null ? `${fmt(costBasis, 0)} ${currency} (${qty} × ${entryPrice.toFixed(2)})` : '?';
+    const tooltip = `Paid: ${costStr}  ·  P&L: ${pnlAmtStr || sign + pnlPct.toFixed(2) + '%'}`;
+    const displayStr = pnlAmtStr
+      ? `<span style="font-size:13px">${sign}${pnlPct.toFixed(1)}%</span><br><span style="font-size:11px;opacity:.7">${pnlAmtStr}</span>`
+      : `${sign}${pnlPct.toFixed(1)}%`;
+    if (pnlPct < pnlThreshold)
+      return { flag: '🔴', cls: 'pnl-red', tooltip, str: displayStr, rowCls: 'row-warning' };
+    if (pnlPct < pnlThreshold / 2)
+      return { flag: '🟡', cls: 'pnl-yellow', tooltip, str: displayStr, rowCls: '' };
+    return { flag: '🟢', cls: 'pnl-green', tooltip, str: displayStr, rowCls: '' };
+  }
+
+  // Build unified rows array (managed + unmanaged)
+  const rows = [];
+
+  for (const sym of Object.keys(targets)) {
+    const pos = posMap[sym];
+    const value = pos ? pos.value_chf : 0;
+    const curPct = total > 0 ? (value / total * 100) : 0;
+    const targetPct = targets[sym] || 0;
+    const delta = curPct - targetPct;
+    rows.push({
+      type: 'managed', ticker: sym,
+      name: pos ? (pos.name || '') : '',
+      value, curPct, targetPct, delta,
+      entry: pos ? pos.entry_price : null,
+      qty: pos ? pos.quantity : null,
+      unrealizedPnl: pos ? pos.unrealized_pnl : null,
+      pnl: pos ? pos.pnl_pct : null,
+      currency: pos ? pos.currency : '',
+    });
+  }
+
+  for (const pos of portfolio.positions) {
+    if (!targets[pos.ticker]) {
+      const curPct = total > 0 ? (pos.value_chf / total * 100) : 0;
+      rows.push({
+        type: 'unmanaged', ticker: pos.ticker,
+        name: pos.name || '',
+        value: pos.value_chf, curPct, targetPct: null, delta: null,
+        entry: pos.entry_price,
+        qty: pos.quantity,
+        unrealizedPnl: pos.unrealized_pnl,
+        pnl: pos.pnl_pct,
+        currency: pos.currency,
+      });
+    }
+  }
+
+  // Sort rows (nulls always sink to bottom)
+  if (sortCol) {
+    rows.sort((a, b) => {
+      let av = a[sortCol], bv = b[sortCol];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string') return sortDir * av.localeCompare(bv);
+      return sortDir * (av - bv);
+    });
+  }
+
+  // Render sorted rows
+  for (const row of rows) {
+    const { type, ticker, name, value, curPct, targetPct, delta,
+            entry: entryPrice, qty, unrealizedPnl, pnl: pnlPct, currency } = row;
+    const costBasis = (entryPrice != null && qty != null) ? entryPrice * qty : null;
+
+    const pnl = buildPnl(pnlPct, entryPrice, qty, unrealizedPnl, currency);
+    const entryCell = entryPrice != null
+      ? `${entryPrice.toFixed(2)} <span style="font-size:10px;color:var(--muted)">${currency}</span>` +
+        (costBasis != null ? `<br><span style="font-size:11px;color:var(--muted);opacity:.7">paid ${fmt(costBasis, 0)}</span>` : '')
+      : '—';
+
+    const tr = document.createElement('tr');
+    if (pnl.rowCls) tr.className = pnl.rowCls;
+
+    if (type === 'managed') {
+      let deltaClass = 'delta-green';
+      if (delta < -10) deltaClass = 'delta-red';
+      else if (delta < -3) deltaClass = 'delta-yellow';
+      else if (delta > 3) deltaClass = 'delta-blue';
+      const deltaStr = (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' pp';
+      tr.innerHTML = `
+        <td><div class="ticker-cell">${ticker}
+          ${pnl.flag ? `<span class="pnl-flag" title="${pnl.tooltip}">${pnl.flag}</span>` : ''}
+        </div></td>
+        <td style="text-align:left;color:var(--muted);font-size:12px;font-weight:400">${name}</td>
+        <td>${fmt(value, 0)}</td>
+        <td>${fmtPct(curPct)}</td>
+        <td class="editable"><input type="number" min="0" max="100" step="0.1"
+          value="${targetPct.toFixed(1)}"
+          data-sym="${ticker}"
+          onchange="onTargetChange(this)"
+          onfocus="this.select()" /></td>
+        <td class="${deltaClass}">${deltaStr}</td>
+        <td class="muted" style="line-height:1.6">${entryCell}</td>
+        <td class="${pnl.cls}">${pnl.str}</td>`;
+    } else {
+      tr.innerHTML = `
+        <td><div class="ticker-cell" style="color:var(--muted)">${ticker}
+          ${pnl.flag ? `<span class="pnl-flag" title="${pnl.tooltip}">${pnl.flag}</span>` : ''}
+          <span style="font-size:10px;opacity:.5">(unmanaged)</span>
+        </div></td>
+        <td style="text-align:left;color:var(--muted);font-size:12px">${name}</td>
+        <td class="muted">${fmt(value, 0)}</td>
+        <td class="muted">${fmtPct(curPct)}</td>
+        <td class="muted">—</td>
+        <td class="muted">—</td>
+        <td class="muted" style="line-height:1.6">${entryCell}</td>
+        <td class="${pnl.cls}">${pnl.str}</td>`;
+    }
+    tbody.appendChild(tr);
+  }
+
+  // Cash row
+  document.getElementById('cash-row').style.display = '';
+  document.getElementById('cash-value-cell').textContent = fmt(portfolio.cash_chf, 0);
+  document.getElementById('cash-pct-cell').textContent = fmtPct(cashPct);
+
+  updateWeightSum();
+  renderChart();
+}
+
+function onTargetChange(input) {
+  const sym = input.dataset.sym;
+  targets[sym] = parseFloat(input.value) || 0;
+  updateWeightSum();
+  renderChart();
+  saveTargets();   // persist silently
+}
+
+function updateWeightSum() {
+  const total = Object.values(targets).reduce((s, v) => s + v, 0);
+  const row = document.getElementById('weight-sum-row');
+  const cell = document.getElementById('weight-sum-cell');
+  row.style.display = '';
+  const ok = Math.abs(total - 100) < 0.11;
+  cell.innerHTML = ok
+    ? `<span id="weight-sum-ok">Weights sum: ${total.toFixed(1)}% ✓</span>`
+    : `<span id="weight-sum-err">⚠ Weights sum to ${total.toFixed(1)}% — must be 100%</span>`;
+  // Disable execute button when weights invalid
+  const execBtn = document.getElementById('btn-execute');
+  if (execBtn) execBtn.disabled = !ok || !isConnected;
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────
+let allocChart = null;
+
+function renderChart() {
+  if (!portfolio) return;
+  const total = portfolio.total_value_chf;
+  const syms = Object.keys(targets);
+  const posMap = {};
+  for (const p of portfolio.positions) posMap[p.ticker] = p;
+
+  // Include Cash as a row
+  const labels = [...syms, 'Cash'];
+  const cashPct = total > 0 ? parseFloat((portfolio.cash_chf / total * 100).toFixed(1)) : 0;
+
+  const curPcts = syms.map(s => {
+    const v = posMap[s] ? posMap[s].value_chf : 0;
+    return total > 0 ? parseFloat((v / total * 100).toFixed(1)) : 0;
+  });
+  curPcts.push(cashPct);
+
+  const tgtPcts = syms.map(s => targets[s] || 0);
+  tgtPcts.push(0); // Cash has no target
+
+  const ctx = document.getElementById('alloc-chart').getContext('2d');
+  if (allocChart) allocChart.destroy();
+
+  // Dynamic height: 48px per bar + padding
+  const chartHeight = Math.max(280, labels.length * 52 + 40);
+  const wrap = document.getElementById('alloc-chart-wrap');
+  wrap.style.height = chartHeight + 'px';
+
+  allocChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Current %',
+          data: curPcts,
+          backgroundColor: curPcts.map((v, i) => {
+            if (i === labels.length - 1) return 'rgba(148,163,184,0.45)'; // cash = grey
+            const tgt = tgtPcts[i];
+            return v > tgt ? 'rgba(59,130,246,0.8)' : 'rgba(59,130,246,0.55)';
+          }),
+          borderRadius: 4,
+          barPercentage: 0.55,
+        },
+        {
+          label: 'Target %',
+          data: tgtPcts,
+          backgroundColor: 'rgba(148,163,184,0.15)',
+          borderColor: 'rgba(148,163,184,0.5)',
+          borderWidth: 1,
+          borderRadius: 4,
+          barPercentage: 0.55,
+        },
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a4', font: {size:12} } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.raw.toFixed(1)}%` } },
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', callback: v => v + '%' }, grid: { color: 'rgba(255,255,255,.05)' }, max: Math.ceil(Math.max(...curPcts, ...tgtPcts) / 5) * 5 + 5 },
+        y: { ticks: { color: '#e2e8f0', font: {size: 13} }, grid: { color: 'transparent' } },
+      },
+    }
+  });
+}
+
+// ── Rebalancing plan ──────────────────────────────────────────────────────
+async function computePlan() {
+  if (!isConnected) return;
+  const minTrade = parseFloat(document.getElementById('min-trade-input').value) || 500;
+  const tbody = document.getElementById('plan-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><span class="spinner"></span> Computing…</td></tr>';
+
+  try {
+    const r = await fetch('/api/plan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ min_trade: minTrade, excluded_tickers: [] }),
+    });
+    const d = await r.json();
+    currentPlan = d.plan;
+
+    renderPlan(d);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state" style="color:var(--red)">Error computing plan</td></tr>';
+  }
+}
+
+function renderPlan(d) {
+  const tbody = document.getElementById('plan-tbody');
+  tbody.innerHTML = '';
+
+  if (!d.plan || d.plan.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state muted">No buys needed — portfolio is balanced.</td></tr>';
+  } else {
+    for (const row of d.plan) {
+      const tr = document.createElement('tr');
+      if (!row.included) tr.className = 'row-excluded';
+      tr.dataset.ticker = row.ticker;
+      tr.innerHTML = `
+        <td style="text-align:center">
+          <input type="checkbox" class="include-toggle" ${row.included ? 'checked' : ''}
+            onchange="toggleInclude('${row.ticker}', this.checked)" ${!row.included && row.reason === 'Below min trade' ? 'title="Below minimum trade size"' : ''} />
+        </td>
+        <td>${row.ticker}</td>
+        <td class="delta-red">-${row.gap_pp.toFixed(1)} pp</td>
+        <td>${row.suggested_chf != null ? 'CHF ' + fmt(row.suggested_chf, 0) : '—'}</td>
+        <td>${row.estimated_qty != null ? '~' + row.estimated_qty : '—'}</td>
+        <td>${row.limit_price != null ? row.limit_price.toFixed(2) : '—'}</td>
+        <td class="muted" style="font-size:12px">${row.reason || ''}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  // Cash boxes
+  document.getElementById('reb-total-invest').textContent = fmtChf(d.total_to_invest);
+  document.getElementById('reb-cash').textContent = fmtChf(d.cash_available);
+  const sfBox = document.getElementById('reb-shortfall-box');
+  if (d.shortfall > 0) {
+    sfBox.style.display = '';
+    sfBox.className = 'cash-box shortfall';
+    document.getElementById('reb-shortfall').textContent = '-' + fmtChf(d.shortfall);
+  } else {
+    sfBox.style.display = 'none';
+  }
+}
+
+function toggleInclude(ticker, checked) {
+  const row = currentPlan.find(r => r.ticker === ticker);
+  if (row) {
+    row.included = checked;
+    const tr = document.querySelector(`#plan-tbody tr[data-ticker="${ticker}"]`);
+    if (tr) tr.className = checked ? '' : 'row-excluded';
+    // Recompute totals
+    const total = currentPlan.filter(r => r.included).reduce((s, r) => s + (r.suggested_chf || 0), 0);
+    document.getElementById('reb-total-invest').textContent = fmtChf(total);
+  }
+}
+
+// ── Dry-run ───────────────────────────────────────────────────────────────
+async function runDryRun() {
+  const orders = buildOrderList();
+  if (!orders.length) { alert('No orders in plan.'); return; }
+  await executeOrders(orders, true);
+}
+
+// ── Confirm modal ─────────────────────────────────────────────────────────
+function openConfirmModal() {
+  const orders = buildOrderList();
+  if (!orders.length) { alert('No orders to execute.'); return; }
+
+  const list = document.getElementById('modal-order-list');
+  list.innerHTML = orders.map(o => `
+    <div class="modal-order-row">
+      <span><strong>${o.ticker}</strong></span>
+      <span>${o.qty} shares</span>
+      <span>limit CHF ${o.limit_price.toFixed(2)}</span>
+      <span class="muted">~${fmtChf(o.estimated_chf)}</span>
+    </div>`).join('');
+
+  const total = orders.reduce((s, o) => s + o.estimated_chf, 0);
+  document.getElementById('modal-total-line').textContent = `Total: ~${fmtChf(total)}`;
+
+  document.getElementById('confirm-modal').classList.add('open');
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').classList.remove('open');
+}
+
+async function confirmAndExecute() {
+  closeConfirmModal();
+  const orders = buildOrderList();
+  await executeOrders(orders, false);
+}
+
+function buildOrderList() {
+  return currentPlan
+    .filter(r => r.included && r.estimated_qty)
+    .map(r => ({
+      ticker: r.ticker,
+      qty: r.estimated_qty,
+      limit_price: r.limit_price || 0,
+      estimated_chf: r.suggested_chf || 0,
+    }));
+}
+
+async function executeOrders(orders, dryRun) {
+  const btnDry = document.getElementById('btn-dryrun');
+  const btnEx  = document.getElementById('btn-execute');
+  btnDry.disabled = btnEx.disabled = true;
+  btnDry.textContent = dryRun ? '⏳ Running…' : btnDry.textContent;
+  btnEx.textContent  = !dryRun ? '⏳ Sending…' : btnEx.textContent;
+
+  try {
+    const r = await fetch('/api/execute', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ orders, dry_run: dryRun }),
+    });
+    const d = await r.json();
+    renderResults(d, dryRun);
+  } catch (e) {
+    alert('Error communicating with server: ' + e.message);
+  } finally {
+    btnDry.disabled = false;
+    btnEx.disabled = false;
+    btnDry.textContent = 'Run Dry-Run';
+    btnEx.textContent  = 'Execute Buys →';
+  }
+}
+
+function renderResults(d, dryRun) {
+  const card = document.getElementById('results-card');
+  const title = document.getElementById('results-title');
+  const tbody = document.getElementById('results-tbody');
+  card.style.display = '';
+  title.textContent = dryRun ? 'Dry-Run Results (no orders placed)' : 'Order Results';
+
+  tbody.innerHTML = d.results.map(r => {
+    const cls = `result-${r.status.toLowerCase().replace(' ','_')}`;
+    return `<tr>
+      <td>${r.ticker}</td>
+      <td>${r.qty}</td>
+      <td>${r.limit_price.toFixed(2)}</td>
+      <td>${fmtChf(r.estimated_chf)}</td>
+      <td><span class="result-badge ${cls}">${r.status}</span></td>
+      <td class="muted">${r.order_id || (r.error ? '⚠ ' + r.error : '—')}</td>
+    </tr>`;
+  }).join('');
+
+  card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+// ── Close modal on overlay click ──────────────────────────────────────────
+document.getElementById('confirm-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeConfirmModal();
+});
+
+// ── Manage Portfolio tab ──────────────────────────────────────────────────
+
+let manageDraft = {};
+
+function renderManage() {
+  const tbody = document.getElementById('manage-tbody');
+  tbody.innerHTML = '';
+  const tickers = Object.keys(manageDraft);
+  if (tickers.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-state muted">No positions defined. Add one below.</td></tr>';
+  } else {
+    for (const sym of tickers) {
+      const tr = document.createElement('tr');
+      tr.className = 'manage-row';
+      tr.innerHTML = `
+        <td class="manage-ticker">${sym}</td>
+        <td style="text-align:right">
+          <input type="number" min="0" max="100" step="0.1"
+            value="${(manageDraft[sym] || 0).toFixed(1)}"
+            data-sym="${sym}"
+            onchange="onManageWeightChange(this)"
+            onfocus="this.select()"
+            style="width:80px" />
+        </td>
+        <td style="text-align:right">
+          <button class="btn-remove" onclick="removePosition('${sym}')">Remove</button>
+        </td>`;
+      tbody.appendChild(tr);
+    }
+  }
+  updateManageSum();
+}
+
+function onManageWeightChange(input) {
+  manageDraft[input.dataset.sym] = parseFloat(input.value) || 0;
+  updateManageSum();
+}
+
+function updateManageSum() {
+  const total = Object.values(manageDraft).reduce((s, v) => s + v, 0);
+  const el = document.getElementById('manage-sum-display');
+  const btn = document.getElementById('btn-save-manage');
+  const ok = Math.abs(total - 100) < 0.11;
+  el.innerHTML = ok
+    ? `<span style="color:var(--green)">Weights sum: ${total.toFixed(1)}% ✓</span>`
+    : `<span style="color:var(--red)">⚠ Weights sum to ${total.toFixed(1)}% — must equal 100%</span>`;
+  if (btn) btn.disabled = !ok;
+}
+
+function addPosition() {
+  const tickerInput = document.getElementById('new-ticker-input');
+  const weightInput = document.getElementById('new-weight-input');
+  const sym = tickerInput.value.trim().toUpperCase();
+  if (!sym) { tickerInput.focus(); return; }
+  manageDraft[sym] = manageDraft[sym] !== undefined ? manageDraft[sym] : (parseFloat(weightInput.value) || 0);
+  tickerInput.value = '';
+  weightInput.value = '0';
+  tickerInput.focus();
+  renderManage();
+}
+
+function removePosition(sym) {
+  delete manageDraft[sym];
+  renderManage();
+}
+
+function distributeEvenly() {
+  const tickers = Object.keys(manageDraft);
+  if (!tickers.length) return;
+  const each = 100 / tickers.length;
+  let remaining = 100;
+  tickers.forEach((sym, i) => {
+    const w = i === tickers.length - 1
+      ? parseFloat(remaining.toFixed(1))
+      : parseFloat(each.toFixed(1));
+    manageDraft[sym] = w;
+    remaining -= parseFloat(each.toFixed(1));
+  });
+  renderManage();
+}
+
+function loadManageDefaults() {
+  if (!confirm('Reset to default allocation from config.py?')) return;
+  fetch('/api/targets/reset', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      manageDraft = {...d.targets};
+      targets = {...d.targets};
+      renderManage();
+      if (portfolio) renderDashboard();
+    });
+}
+
+async function saveManage() {
+  const total = Object.values(manageDraft).reduce((s, v) => s + v, 0);
+  if (Math.abs(total - 100) > 0.11) return;
+  const el = document.getElementById('manage-sum-display');
+  try {
+    const r = await fetch('/api/targets', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({targets: manageDraft}),
+    });
+    if (r.ok) {
+      targets = {...manageDraft};
+      el.innerHTML += '&nbsp;&nbsp;<span style="color:var(--green)">Saved ✓</span>';
+      if (portfolio) renderDashboard();
+      setTimeout(updateManageSum, 2500);
+    } else {
+      const e = await r.json();
+      el.innerHTML += `&nbsp;&nbsp;<span style="color:var(--red)">${e.detail}</span>`;
+    }
+  } catch (e) {
+    el.innerHTML += `&nbsp;&nbsp;<span style="color:var(--red)">Network error</span>`;
+  }
+}
+
+// Populate manage draft when switching to the tab
+const _origSwitchTab = switchTab;
+switchTab = function(name) {
+  _origSwitchTab(name);
+  if (name === 'manage') {
+    manageDraft = {...targets};
+    renderManage();
+  }
+};
+
+// ── Trade History ─────────────────────────────────────────────────────────
+async function loadHistory() {
+  const tbody = document.getElementById('history-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><span class="spinner"></span> Loading…</td></tr>';
+  try {
+    const r = await fetch('/api/trades');
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="8" class="empty-state" style="color:var(--red)">Error loading history</td></tr>'; return; }
+    const { trades } = await r.json();
+    if (!trades.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state muted">No executed orders yet. Orders placed via the Rebalancing tab will appear here.</td></tr>';
+      return;
+    }
+    // Show newest first
+    tbody.innerHTML = '';
+    for (const t of [...trades].reverse()) {
+      const dt = new Date(t.timestamp);
+      const dateStr = dt.toLocaleDateString('de-CH', {day:'2-digit', month:'2-digit', year:'numeric'});
+      const timeStr = dt.toLocaleTimeString('de-CH', {hour:'2-digit', minute:'2-digit'});
+      const modeCls = t.mode === 'live' ? 'color:var(--live);font-weight:700' : 'color:var(--paper)';
+      const statusCls = {submitted:'result-submitted', filled:'result-filled', error:'result-error', Submitted:'result-submitted', Filled:'result-filled'}[t.status] || 'result-dry_run';
+      const errTitle = t.error ? ` title="${t.error}"` : '';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="text-align:left;color:var(--muted)">${dateStr}<br><span style="font-size:11px">${timeStr}</span></td>
+        <td style="text-align:left"><span style="${modeCls}">${(t.mode||'').toUpperCase()}</span></td>
+        <td style="text-align:left;font-weight:700">${t.ticker}</td>
+        <td>${t.qty}</td>
+        <td>${t.limit_price != null ? fmt(t.limit_price, 2) : '—'}</td>
+        <td>${t.estimated_chf != null ? fmt(t.estimated_chf, 0) : '—'}</td>
+        <td><span class="result-badge ${statusCls}"${errTitle}>${t.status}</span></td>
+        <td style="color:var(--muted);font-size:12px">${t.order_id ?? '—'}</td>`;
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state" style="color:var(--red)">Network error</td></tr>';
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+async function init() {
+  await pollStatus();
+  await loadTargets();
+  if (isConnected) await loadPortfolio();
+  // Poll status every 5s
+  setInterval(async () => {
+    const wasConnected = isConnected;
+    await pollStatus();
+    // Auto-load portfolio on reconnect
+    if (!wasConnected && isConnected) await loadPortfolio();
+  }, 5000);
+}
+
+init();
+</script>
+</body>
+</html>
