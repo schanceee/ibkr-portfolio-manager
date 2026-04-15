@@ -129,8 +129,7 @@ def test_pnl_zero_avg_cost():
 # ── UT-13: Config fallback ────────────────────────────────────────────────
 
 def test_default_targets_loaded():
-    if not DEFAULT_TARGETS:
-        pytest.skip("config.py not present (CI environment — expected)")
+    assert len(DEFAULT_TARGETS) > 0, "No targets loaded — config.py and config.example.py both missing"
     assert abs(sum(DEFAULT_TARGETS.values()) - 100.0) < 0.1
 
 

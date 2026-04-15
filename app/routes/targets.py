@@ -19,11 +19,16 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "claude"))
 try:
     import config as _cfg
-    DEFAULT_TARGETS: Dict[str, float] = dict(_cfg.TARGET_ALLOCATION)
-    DEFAULT_MIN_TRADE: float = float(_cfg.MIN_TRADE)
 except ImportError:
-    DEFAULT_TARGETS = {}
-    DEFAULT_MIN_TRADE = 500.0
+    # config.py is gitignored (personal data) — fall back to the example file
+    import importlib.util as _ilu
+    _example = Path(__file__).parent.parent.parent / "claude" / "config.example.py"
+    _spec = _ilu.spec_from_file_location("config", _example)
+    _cfg = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_cfg)
+
+DEFAULT_TARGETS: Dict[str, float] = dict(_cfg.TARGET_ALLOCATION)
+DEFAULT_MIN_TRADE: float = float(_cfg.MIN_TRADE)
 
 DEFAULT_PNL_THRESHOLD: float = -10.0
 
