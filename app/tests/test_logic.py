@@ -126,7 +126,47 @@ def test_pnl_zero_avg_cost():
     assert result is None
 
 
-# ── UT-13: Config fallback ────────────────────────────────────────────────
+# ── UT-13 / UT-14: Config structure ──────────────────────────────────────────
+
+REQUIRED_CONFIG_ATTRS = ["TARGET_ALLOCATION", "MIN_TRADE",
+                         "IB_LIVE_PORT", "IB_PAPER_PORT", "IB_HOST", "IB_CLIENT_ID"]
+
+def _load_config_file(path: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_cfg_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_example_config_has_required_fields():
+    """config.example.py must have every field that the app reads from config.py."""
+    example = Path(__file__).parent.parent.parent / "claude" / "config.example.py"
+    assert example.exists(), "config.example.py is missing from the repo"
+    mod = _load_config_file(example)
+    for attr in REQUIRED_CONFIG_ATTRS:
+        assert hasattr(mod, attr), f"config.example.py is missing required field: {attr}"
+
+
+def test_example_config_weights_sum_to_100():
+    """config.example.py TARGET_ALLOCATION must sum to 100% — it's the CI reference."""
+    example = Path(__file__).parent.parent.parent / "claude" / "config.example.py"
+    mod = _load_config_file(example)
+    total = sum(mod.TARGET_ALLOCATION.values())
+    assert abs(total - 100.0) < 0.1, f"config.example.py weights sum to {total:.1f}%, must be 100%"
+
+
+def test_real_config_matches_example_structure():
+    """If config.py exists locally, it must have the same fields as config.example.py."""
+    real = Path(__file__).parent.parent.parent / "claude" / "config.py"
+    if not real.exists():
+        pytest.skip("config.py not present (CI environment — expected)")
+    mod = _load_config_file(real)
+    for attr in REQUIRED_CONFIG_ATTRS:
+        assert hasattr(mod, attr), f"config.py is missing required field: {attr}"
+    total = sum(mod.TARGET_ALLOCATION.values())
+    assert abs(total - 100.0) < 0.1, f"config.py weights sum to {total:.1f}%, must be 100%"
+
 
 def test_default_targets_loaded():
     assert len(DEFAULT_TARGETS) > 0, "No targets loaded — config.py and config.example.py both missing"
