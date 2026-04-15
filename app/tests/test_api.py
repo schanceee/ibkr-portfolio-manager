@@ -323,3 +323,193 @@ def test_dry_run_not_persisted(client, mock_ib_state, tmp_path, monkeypatch):
     })
 
     assert not log_file.exists(), "Dry-run must not write to trade log"
+
+
+# ── AT-09 / AT-10: /api/portfolio ────────────────────────────────────────────
+
+def test_portfolio_returns_positions_and_cash(client, mock_ib_state):
+    """GET /api/portfolio must return positions, cash, and total portfolio value."""
+    mock_ib_state["client"].ib.portfolio.return_value = [
+        _fake_portfolio_item("SUSW", 40, 6200.0, 155.0),
+        _fake_portfolio_item("XDWT", 36, 3506.4, 97.40),
+    ]
+    mock_ib_state["client"].get_account_cash.return_value = 5000.0
+
+    r = client.get("/api/portfolio")
+    assert r.status_code == 200
+    data = r.json()
+    assert "positions" in data
+    assert "cash_chf" in data
+    assert "total_value_chf" in data
+    tickers = [p["ticker"] for p in data["positions"]]
+    assert "SUSW" in tickers
+    assert "XDWT" in tickers
+    assert data["cash_chf"] == 5000.0
+    assert abs(data["total_value_chf"] - (6200.0 + 3506.4 + 5000.0)) < 1.0
+
+
+def test_portfolio_includes_pnl(client, mock_ib_state):
+    """GET /api/portfolio positions must include pnl_pct computed from avg_cost."""
+    mock_ib_state["client"].ib.portfolio.return_value = [
+        _fake_portfolio_item("NUKL", 60, 2778.0, 46.30),
+    ]
+    mock_ib_state["client"].get_account_cash.return_value = 1000.0
+
+    r = client.get("/api/portfolio")
+    assert r.status_code == 200
+    positions = r.json()["positions"]
+    nukl = next((p for p in positions if p["ticker"] == "NUKL"), None)
+    assert nukl is not None
+    # _fake_portfolio_item sets averageCost = marketPrice * 0.95 → pnl ≈ +5.26%
+    assert nukl["pnl_pct"] is not None
+    assert nukl["pnl_pct"] > 0
+
+
+def test_portfolio_includes_unmanaged_positions(client, mock_ib_state):
+    """Spec §5: Positions not in target list must appear in portfolio response."""
+    mock_ib_state["client"].ib.portfolio.return_value = [
+        _fake_portfolio_item("SUSW", 40, 6200.0, 155.0),
+        _fake_portfolio_item("AAPL", 10, 1500.0, 150.0),  # not in any target
+    ]
+    mock_ib_state["client"].get_account_cash.return_value = 2000.0
+
+    r = client.get("/api/portfolio")
+    assert r.status_code == 200
+    tickers = [p["ticker"] for p in r.json()["positions"]]
+    assert "AAPL" in tickers, "Unmanaged positions must appear in portfolio response"
+    assert "SUSW" in tickers
+
+
+# ── AT-11: 503 responses when TWS is disconnected ────────────────────────────
+
+@pytest.fixture
+def disconnected_client(config_file):
+    """FastAPI TestClient with TWS not connected."""
+    with patch("routes.state._connected", False), \
+         patch("routes.state._ib_client", None):
+        from app import create_app
+        with patch("routes.state.start_connection_thread"):
+            app = create_app()
+        with TestClient(app) as c:
+            yield c
+
+
+def test_portfolio_503_when_disconnected(disconnected_client):
+    """Spec §5: App must refuse to operate if TWS is not running."""
+    r = disconnected_client.get("/api/portfolio")
+    assert r.status_code == 503
+
+
+def test_plan_503_when_disconnected(disconnected_client):
+    """Spec §5: /api/plan must return 503 when TWS is not connected."""
+    r = disconnected_client.post("/api/plan", json={"min_trade": 500, "excluded_tickers": []})
+    assert r.status_code == 503
+
+
+def test_execute_503_when_disconnected(disconnected_client):
+    """Spec §5: /api/execute must return 503 when TWS is not connected."""
+    r = disconnected_client.post("/api/execute", json={
+        "dry_run": False,
+        "orders": [{"ticker": "CHSPI", "qty": 4, "limit_price": 161.20, "estimated_chf": 644.0}],
+    })
+    assert r.status_code == 503
+
+
+# ── AT-12: /api/targets/reset ────────────────────────────────────────────────
+
+def test_targets_reset_restores_defaults(client, config_file):
+    """POST /api/targets/reset must overwrite saved config with DEFAULT_TARGETS."""
+    # First save a custom allocation
+    client.post("/api/targets", json={"targets": {"SUSW": 60.0, "XDWT": 40.0}})
+
+    r = client.post("/api/targets/reset")
+    assert r.status_code == 200
+
+    r2 = client.get("/api/targets")
+    returned = r2.json()["targets"]
+    from routes.targets import DEFAULT_TARGETS
+    for ticker, weight in DEFAULT_TARGETS.items():
+        assert abs(returned.get(ticker, -1) - weight) < 0.01, (
+            f"After reset, {ticker} should be {weight}% but got {returned.get(ticker)}"
+        )
+
+
+# ── AT-13: BUY-only enforcement ───────────────────────────────────────────────
+
+def test_execute_places_only_buy_orders(client, mock_ib_state):
+    """Spec §2: App only places BUY orders, never SELL."""
+    trade_mock = MagicMock()
+    trade_mock.orderStatus.status = "Submitted"
+    trade_mock.order.orderId = 55
+    trade_mock.log = []
+    mock_ib_state["client"].ib.placeOrder.return_value = trade_mock
+
+    client.post("/api/execute", json={
+        "dry_run": False,
+        "orders": [{"ticker": "CHSPI", "qty": 4, "limit_price": 161.20, "estimated_chf": 644.0}],
+    })
+
+    assert mock_ib_state["client"].ib.placeOrder.called
+    placed_order = mock_ib_state["client"].ib.placeOrder.call_args[0][1]
+    assert placed_order.action == "BUY", (
+        f"Order action must be 'BUY', got '{placed_order.action}'. "
+        "The app must never place SELL orders per spec."
+    )
+
+
+# ── AT-14: DAY time-in-force ──────────────────────────────────────────────────
+
+def test_execute_orders_use_day_tif(client, mock_ib_state):
+    """Spec §W3: Orders expire at end of trading day (tif=DAY)."""
+    trade_mock = MagicMock()
+    trade_mock.orderStatus.status = "Submitted"
+    trade_mock.order.orderId = 66
+    trade_mock.log = []
+    mock_ib_state["client"].ib.placeOrder.return_value = trade_mock
+
+    client.post("/api/execute", json={
+        "dry_run": False,
+        "orders": [{"ticker": "CHSPI", "qty": 4, "limit_price": 161.20, "estimated_chf": 644.0}],
+    })
+
+    placed_order = mock_ib_state["client"].ib.placeOrder.call_args[0][1]
+    assert placed_order.tif == "DAY", (
+        f"Order tif must be 'DAY', got '{placed_order.tif}'. "
+        "Orders must expire at end of trading day per spec."
+    )
+
+
+# ── AT-15: Shortfall calculation ─────────────────────────────────────────────
+
+def test_plan_reports_shortfall_when_cash_insufficient(client, mock_ib_state):
+    """Spec §W2: when total_to_invest > cash, shortfall must be reported."""
+    mock_ib_state["client"].ib.portfolio.return_value = [
+        _fake_portfolio_item("SUSW", 10, 1550.0, 155.0),
+        _fake_portfolio_item("XDWT", 10, 974.0, 97.40),
+    ]
+    mock_ib_state["client"].get_account_cash.return_value = 500.0
+
+    r = client.post("/api/plan", json={"min_trade": 100, "excluded_tickers": []})
+    assert r.status_code == 200
+    data = r.json()
+
+    assert "shortfall" in data
+    assert "total_to_invest" in data
+    assert "cash_available" in data
+    assert data["cash_available"] == 500.0
+    if data["total_to_invest"] > data["cash_available"]:
+        expected_shortfall = data["total_to_invest"] - data["cash_available"]
+        assert abs(data["shortfall"] - expected_shortfall) < 1.0, (
+            f"Shortfall should be {expected_shortfall:.2f}, got {data['shortfall']}"
+        )
+
+
+# ── AT-16: Status returns mode ───────────────────────────────────────────────
+
+def test_status_returns_paper_mode(client):
+    """GET /api/status must report paper/live mode."""
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert "mode" in data
+    assert data["mode"] in ("paper", "live")
