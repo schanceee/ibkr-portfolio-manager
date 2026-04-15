@@ -14,13 +14,18 @@ CONFIG_FILE = Path(__file__).parent.parent / "app_config.json"
 DEFAULTS_FILE = Path(__file__).parent.parent.parent / "claude" / "config.py"
 
 # ── default allocation read from claude/config.py at import time ──────────────
+# config.py is gitignored (personal data) — fall back to empty defaults in CI
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "claude"))
-import config as _cfg
+try:
+    import config as _cfg
+    DEFAULT_TARGETS: Dict[str, float] = dict(_cfg.TARGET_ALLOCATION)
+    DEFAULT_MIN_TRADE: float = float(_cfg.MIN_TRADE)
+except ImportError:
+    DEFAULT_TARGETS = {}
+    DEFAULT_MIN_TRADE = 500.0
 
-DEFAULT_TARGETS: Dict[str, float] = dict(_cfg.TARGET_ALLOCATION)
 DEFAULT_PNL_THRESHOLD: float = -10.0
-DEFAULT_MIN_TRADE: float = float(_cfg.MIN_TRADE)
 
 
 def _load_config() -> dict:
