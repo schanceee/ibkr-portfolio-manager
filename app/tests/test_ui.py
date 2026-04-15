@@ -23,36 +23,62 @@ BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8889")
 SLOW_MO = int(os.environ.get("SLOW_MO", "600"))
 
 # ── Click-ripple JS injected into every page ──────────────────────────────────
-# Shows a blue ring at every click point so you can follow what the test does.
+# Shows a bright orange ring + persistent crosshair on every Playwright click.
+# Uses mousedown (always fired by Playwright) rather than click.
 _CLICK_HIGHLIGHT_SCRIPT = """
 (function() {
   const style = document.createElement('style');
   style.textContent = `
     @keyframes _pw_ripple {
-      0%   { transform: scale(0.3); opacity: 1; }
-      100% { transform: scale(2.2); opacity: 0; }
+      0%   { transform: scale(0.4); opacity: 1;   border-width: 4px; }
+      60%  { transform: scale(1.8); opacity: 0.8; border-width: 3px; }
+      100% { transform: scale(2.8); opacity: 0;   border-width: 1px; }
     }
-    ._pw_click_dot {
+    ._pw_ripple {
       position: fixed;
-      width: 36px; height: 36px;
+      width: 48px; height: 48px;
       border-radius: 50%;
-      background: rgba(59,130,246,0.35);
-      border: 2.5px solid rgba(59,130,246,0.9);
+      background: rgba(255,120,0,0.25);
+      border: 4px solid rgba(255,120,0,1);
       pointer-events: none;
       z-index: 2147483647;
-      animation: _pw_ripple 0.55s ease-out forwards;
+      animation: _pw_ripple 0.9s ease-out forwards;
       transform-origin: center;
+    }
+    ._pw_cursor {
+      position: fixed;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: rgba(255,120,0,0.9);
+      pointer-events: none;
+      z-index: 2147483647;
+      transform: translate(-50%,-50%);
+      transition: left 0.05s, top 0.05s;
+      box-shadow: 0 0 0 3px rgba(255,120,0,0.3), 0 0 0 6px rgba(255,120,0,0.1);
     }
   `;
   document.head.appendChild(style);
 
-  document.addEventListener('click', function(e) {
-    const dot = document.createElement('div');
-    dot.className = '_pw_click_dot';
-    dot.style.left = (e.clientX - 18) + 'px';
-    dot.style.top  = (e.clientY - 18) + 'px';
-    document.body.appendChild(dot);
-    setTimeout(() => dot.remove(), 600);
+  // Persistent orange dot that follows the mouse
+  const cursor = document.createElement('div');
+  cursor.className = '_pw_cursor';
+  cursor.style.left = '-100px';
+  cursor.style.top  = '-100px';
+  document.body.appendChild(cursor);
+
+  document.addEventListener('mousemove', function(e) {
+    cursor.style.left = e.clientX + 'px';
+    cursor.style.top  = e.clientY + 'px';
+  }, true);
+
+  // Ripple on mousedown (Playwright always fires this before click)
+  document.addEventListener('mousedown', function(e) {
+    const ring = document.createElement('div');
+    ring.className = '_pw_ripple';
+    ring.style.left = (e.clientX - 24) + 'px';
+    ring.style.top  = (e.clientY - 24) + 'px';
+    document.body.appendChild(ring);
+    setTimeout(() => ring.remove(), 950);
   }, true);
 })();
 """
@@ -69,7 +95,6 @@ def browser_context():
             args=["--start-maximized"],
         )
         context = browser.new_context(viewport={"width": 1280, "height": 900})
-        context.add_init_script(_CLICK_HIGHLIGHT_SCRIPT)
         yield context
         browser.close()
 
@@ -77,6 +102,8 @@ def browser_context():
 @pytest.fixture
 def page(browser_context):
     p = browser_context.new_page()
+    # Inject click-highlight script on this page AND on every subsequent navigation
+    p.add_init_script(_CLICK_HIGHLIGHT_SCRIPT)
     yield p
     p.close()
 
