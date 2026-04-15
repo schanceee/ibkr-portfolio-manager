@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from .state import get_client, ensure_event_loop
+from .state import get_client, ensure_event_loop, get_price_cache, get_contract_cache
 import routes.state as _state
 from .targets import _load_config
 
@@ -87,13 +87,18 @@ def _build_plan(
     # Sort: included first by gap desc, then excluded
     results.sort(key=lambda r: (-r["included"], -r["gap_pp"]))
 
-    # Fit within available cash: trim smallest included buys until total ≤ cash
+    # First pass: exclude any single buy that is individually more than available cash
+    for r in results:
+        if r["included"] and r["suggested_chf"] > cash_chf:
+            r["included"] = False
+            r["reason"] = "Excluded: insufficient cash"
+
+    # Second pass: trim smallest included buys until the combined total fits
     included = [r for r in results if r["included"]]
     excluded_rows = [r for r in results if not r["included"]]
     total_needed = sum(r["suggested_chf"] for r in included)
 
     while total_needed > cash_chf and included:
-        # Remove the smallest included buy
         smallest = min(included, key=lambda r: r["suggested_chf"])
         smallest["included"] = False
         smallest["reason"] = "Excluded: insufficient cash"
@@ -129,13 +134,19 @@ def compute_plan(req: PlanRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     positions_by_symbol: Dict[str, float] = {}
-    price_cache: Dict[str, float] = {}
+    price_cache: Dict[str, float] = get_price_cache()  # pre-built by connection thread
+
     for item in portfolio_items:
         if item.position and item.position != 0:
             sym = item.contract.symbol
             positions_by_symbol[sym] = positions_by_symbol.get(sym, 0) + (item.marketValue or 0)
+            # Freshen price from live portfolio data if available
             if item.marketPrice and item.marketPrice > 0:
                 price_cache[sym] = item.marketPrice
+            elif item.marketValue and item.position and sym not in price_cache:
+                derived = abs(item.marketValue / item.position)
+                if derived > 0:
+                    price_cache[sym] = derived
 
     total_value = sum(positions_by_symbol.values()) + cash_chf
 
@@ -187,15 +198,8 @@ def execute_orders(req: ExecuteRequest):
 
     results = []
 
-    # Build contract cache from portfolio items (already qualified — no lookup needed)
-    portfolio_contracts: Dict[str, object] = {}
-    try:
-        for item in client.ib.portfolio():
-            sym = item.contract.symbol
-            if sym not in portfolio_contracts:
-                portfolio_contracts[sym] = item.contract
-    except Exception as e:
-        logger.warning(f"Could not pre-cache portfolio contracts: {e}")
+    # Use contracts pre-qualified by the connection thread — no ib calls here
+    portfolio_contracts: Dict[str, object] = get_contract_cache()
 
     for order in req.orders:
         if req.dry_run:
@@ -211,8 +215,7 @@ def execute_orders(req: ExecuteRequest):
             continue
 
         try:
-            # Use contract from portfolio cache (already qualified); fall back to symbol search
-            raw_contract = portfolio_contracts.get(order.ticker) or client.find_contract(order.ticker)
+            raw_contract = portfolio_contracts.get(order.ticker)
             if not raw_contract:
                 results.append({
                     "ticker": order.ticker,

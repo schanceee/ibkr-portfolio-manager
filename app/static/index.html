@@ -881,7 +881,7 @@ function renderPlan(d) {
         <td>${row.suggested_chf != null ? 'CHF ' + fmt(row.suggested_chf, 0) : '—'}</td>
         <td>${row.estimated_qty != null ? '~' + row.estimated_qty : '—'}</td>
         <td>${row.limit_price != null ? row.limit_price.toFixed(2) : '—'}</td>
-        <td class="muted" style="font-size:12px">${row.reason || ''}</td>`;
+        <td class="muted" style="font-size:12px">${row.reason || (row.included && row.estimated_qty == null ? '⚠ No market price — refresh or check TWS' : '')}</td>`;
       tbody.appendChild(tr);
     }
   }
@@ -904,7 +904,14 @@ function toggleInclude(ticker, checked) {
   if (row) {
     row.included = checked;
     const tr = document.querySelector(`#plan-tbody tr[data-ticker="${ticker}"]`);
-    if (tr) tr.className = checked ? '' : 'row-excluded';
+    if (tr) {
+      tr.className = checked ? '' : 'row-excluded';
+      // Clear stale exclusion note when manually including a row
+      const noteCell = tr.cells[tr.cells.length - 1];
+      if (checked && noteCell && noteCell.textContent.startsWith('Excluded')) {
+        noteCell.textContent = '';
+      }
+    }
     // Recompute totals
     const total = currentPlan.filter(r => r.included).reduce((s, r) => s + (r.suggested_chf || 0), 0);
     document.getElementById('reb-total-invest').textContent = fmtChf(total);

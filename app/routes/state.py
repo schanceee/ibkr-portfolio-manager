@@ -24,7 +24,10 @@ _LIVE_PORT  = 7496
 _ib_client: Optional[IBClient] = None
 _connected: bool = False
 _lock = threading.Lock()
-_name_cache: Dict[str, str] = {}   # ticker → longName, populated at connect time
+_name_cache: Dict[str, str] = {}       # ticker → longName
+_price_cache: Dict[str, float] = {}    # ticker → latest market price
+_contract_cache: Dict[str, object] = {} # ticker → qualified Contract
+_price_cache_lock = threading.Lock()
 
 
 def get_client() -> Optional[IBClient]:
@@ -37,6 +40,21 @@ def is_connected() -> bool:
 
 def get_name(ticker: str) -> str:
     return _name_cache.get(ticker, "")
+
+
+def get_cached_price(ticker: str) -> Optional[float]:
+    with _price_cache_lock:
+        return _price_cache.get(ticker)
+
+
+def get_price_cache() -> Dict[str, float]:
+    with _price_cache_lock:
+        return dict(_price_cache)
+
+
+def get_contract_cache() -> Dict[str, object]:
+    with _price_cache_lock:
+        return dict(_contract_cache)
 
 
 def _fetch_names(client: IBClient) -> None:
@@ -54,6 +72,64 @@ def _fetch_names(client: IBClient) -> None:
         logger.info(f"Name cache populated: {list(_name_cache.keys())}")
     except Exception as e:
         logger.warning(f"Name fetch failed: {e}")
+
+
+def _fetch_prices(client: IBClient) -> None:
+    """Populate _price_cache for all portfolio + target tickers.
+    Must be called from the connection thread (owns the ib event loop)."""
+    global _price_cache
+    from ib_insync import Stock
+    import math as _math
+
+    new_cache: Dict[str, float] = {}
+    try:
+        portfolio_items = client.ib.portfolio()
+        contract_map: Dict[str, object] = {}
+
+        # Step 1: prices from portfolio items
+        for item in portfolio_items:
+            sym = item.contract.symbol
+            contract_map[sym] = item.contract
+            if item.marketPrice and item.marketPrice > 0:
+                new_cache[sym] = item.marketPrice
+            elif item.marketValue and item.position and item.position != 0:
+                derived = abs(item.marketValue / item.position)
+                if derived > 0:
+                    new_cache[sym] = derived
+
+        # Step 2: qualify contracts for target tickers not yet held
+        try:
+            from .targets import _load_config
+            targets = _load_config().get("targets", {})
+            unresolved = [s for s in targets if s not in contract_map]
+            for sym in unresolved:
+                for currency in ['CHF', 'EUR', 'USD']:
+                    try:
+                        q = client.ib.qualifyContracts(Stock(sym, 'SMART', currency))
+                        if q:
+                            contract_map[sym] = q[0]
+                            break
+                    except Exception:
+                        continue
+
+            # Step 3: reqTickers for anything still missing a price
+            needed_contracts = [contract_map[s] for s in targets
+                                if s not in new_cache and s in contract_map]
+            if needed_contracts:
+                tickers = client.ib.reqTickers(*needed_contracts)
+                for t in tickers:
+                    p = t.marketPrice()
+                    if p and p > 0 and not _math.isnan(p):
+                        new_cache[t.contract.symbol] = p
+        except Exception as e:
+            logger.warning(f"Price fetch (targets step) failed: {e}")
+
+        with _price_cache_lock:
+            _price_cache = new_cache
+            _contract_cache.update(contract_map)
+        logger.info(f"Price cache updated: { {k: round(v,2) for k,v in new_cache.items()} }")
+    except Exception as e:
+        logger.warning(f"Price fetch failed: {e}")
 
 
 def ensure_event_loop():
@@ -101,6 +177,7 @@ def _connection_worker():
                             IB_PORT = port
                         logger.info(f"IB connected ✓  ({'LIVE' if is_live else 'PAPER'} mode, port {port})")
                         _fetch_names(client)
+                        _fetch_prices(client)
                         break
                 except Exception as e:
                     logger.warning(f"Port {port} failed: {e}")
@@ -118,6 +195,12 @@ def _connection_worker():
                         current_client.ib.sleep(0.5)
                 except Exception:
                     break
+            # Refresh price cache after each pump cycle
+            try:
+                if current_client:
+                    _fetch_prices(current_client)
+            except Exception:
+                pass
             # Health-check after the pump cycle
             try:
                 if current_client and not current_client.ib.isConnected():
