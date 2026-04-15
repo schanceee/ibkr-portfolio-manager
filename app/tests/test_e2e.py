@@ -10,6 +10,7 @@ Run with:
 Skip automatically if TWS is not reachable.
 """
 
+import os
 import sys
 import time
 import socket
@@ -39,24 +40,45 @@ def _tws_reachable(host: str = "127.0.0.1", port: int = 7497, timeout: float = 2
 @pytest.fixture(scope="module")
 def e2e_client():
     """
-    FastAPI TestClient connected to a real paper TWS.
+    HTTP client for E2E tests.
 
-    Waits up to 15 seconds for the IB connection thread to establish a
-    connection and populate the price cache before yielding the client.
+    Two modes:
+      - Default (no env var): spins up an in-process FastAPI TestClient.
+      - Visual (E2E_BASE_URL set): uses httpx.Client pointed at the running
+        server so you can watch the app respond in the browser.
+        Set by run_e2e_visual.sh automatically.
     """
-    from fastapi.testclient import TestClient
-    from app import create_app
+    base_url = os.environ.get("E2E_BASE_URL", "").strip()
 
-    app = create_app()
-    with TestClient(app, raise_server_exceptions=False) as c:
-        # Wait for connection thread to connect and prime caches
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            r = c.get("/api/status")
-            if r.status_code == 200 and r.json().get("connected"):
-                break
-            time.sleep(1)
-        yield c
+    if base_url:
+        # Real server mode — point httpx at the already-running app
+        import httpx
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            # Wait for the server to be connected and ready
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                try:
+                    r = c.get("/api/status")
+                    if r.status_code == 200 and r.json().get("connected"):
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            yield c
+    else:
+        # In-process mode (CI / default)
+        from fastapi.testclient import TestClient
+        from app import create_app
+
+        app = create_app()
+        with TestClient(app, raise_server_exceptions=False) as c:
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                r = c.get("/api/status")
+                if r.status_code == 200 and r.json().get("connected"):
+                    break
+                time.sleep(1)
+            yield c
 
 
 # ── E2E-01: Connection health ─────────────────────────────────────────────────
